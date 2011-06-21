@@ -114,7 +114,7 @@ class PageHandler(xml.sax.handler.ContentHandler):
 	
 	def handleTagWithinRevision(self,name):
 		if name == "timestamp":
-			self.revattrs["timestamp"] = self.buffer[0:10]+" "+self.buffer[11:-1]
+			self.revattrs["timestamp"] = "{0} {1}".format(self.buffer[0:10],self.buffer[11:-1])
 		elif name == "minor":
 			self.revattrs["minor"]=1
 		elif name == "contributor":
@@ -126,7 +126,7 @@ class PageHandler(xml.sax.handler.ContentHandler):
 	
 	def makeEditorsFile(self):
 		for ed in self.editors.iteritems():
-			st = ed[0]+u"\t"+ed[1]+u"\n"
+			st = u"{0}\t{1}\n".format(ed[0],ed[1])
 			st = st.encode(self.encoding)
 			self.editorFile.write(st)
 	
@@ -200,7 +200,6 @@ class ParseThread(threading.Thread):
 		
 	def run(self):
 		self.runParser()
-		#cProfile.run("self.runParser()")
 		
 	def runParser(self):
 		parser = xml.sax.make_parser()
@@ -233,7 +232,7 @@ class ParseThread(threading.Thread):
 				
 				global totalParse
 				totalParse += eparse-sparse
-				printQ.put("Another 10MB Parsed!")
+				#printQ.put("Another 10MB Parsed!")
 				
 			except Queue.Empty:
 				[f.close() for f in [self.pagefile,self.revfile,self.edfile]]
@@ -251,6 +250,7 @@ class FileWrite(threading.Thread):
 	def run(self):
 		while True:
 			try:
+				#files = [writeQ.get(True,5) for i in range(writeQ.qsize())]
 				nextFile = writeQ.get(True,5)
 			except Queue.Empty:
 				printQ.put("{0} has had nothing to do for five seconds... terminating.".format(self.getName()))
@@ -258,13 +258,19 @@ class FileWrite(threading.Thread):
 			else:
 				# nextFile[0] is write path
 				# nextFile[1] is file contents
+				self.procFile(nextFile[0],nextFile[1])
 				
-				f = open(nextFile[0],"w")
-				f.write(nextFile[1])
-				f.close()
-				writeQ.task_done()
-				self.written+=1
-				printQ.put("{0:30} file written to disk.  File number {1:6}.".format(nextFile[0],self.written))
+				#[self.procFile(f[0],f[1]) for f in files]
+				
+	
+	def procFile(self,path,content):
+		f = open(path,"w")
+		f.write(content)
+		f.close()
+		writeQ.task_done()
+		printQ.put("{0:40} file written to disk.  File number {1:6}.".format(path,self.written))
+		
+		self.written+=1
 		
 
 class FileCompress(threading.Thread):
@@ -309,15 +315,15 @@ class FileCompress(threading.Thread):
 				
 	
 def main():
-#	import yappi
+	import yappi
 	
 	outpath = "/wikigroup/testoutput"
 	
 	for i in range(100):
 		if i >= 10:
-			pth = outpath+str(i)+"/"
+			pth = "{0}/{1}/".format(outpath,str(i))
 		else:
-			pth =outpath +"0"+str(i)+"/"
+			pth = "{0}/0{1}/".format(outpath,str(i))
 		if not os.path.exists(pth):
 		    os.makedirs(pth)
 	
@@ -329,12 +335,12 @@ def main():
 #	path = "enwiki-20100130-pages-meta-history.xml.bz2"
 #	path = "enwiki-latest-stub-articles1.xml.bz2"
 	
-#	yappi.start()
+	# yappi.start()
 	
 	FileReadDecompress(path,10000000).start()
 	ParseThread("pages.dat","revisions.dat","editors.dat").start()
 	
-	for i in range(6):
+	for i in range(3):
 		FileCompress(i,outpath).start()
 	
 	#for i in range(3):
@@ -349,11 +355,11 @@ def main():
 	writeQ.join()
 	print "WriteQ Empty"
 	
-#	stats = yappi.get_stats()
-#	for stat in stats:
-#		print stat
-#	yappi.stop()
-	
+	# stats = yappi.get_stats()
+	# for stat in stats:
+	# 	print stat
+	# yappi.stop()
+	# 
 	
 	print " Runtime: " +str(time.time()-start) +" seconds."
 	global totalCompression
