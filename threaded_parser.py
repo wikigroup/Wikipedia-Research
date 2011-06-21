@@ -9,9 +9,9 @@ import cProfile
 
 
 parseQ = Queue.Queue(5)
-compressQ = Queue.Queue()
-printQ = Queue.Queue()
-writeQ = Queue.Queue()
+compressQ = Queue.Queue(100000)
+printQ = Queue.Queue(100000)
+writeQ = Queue.Queue(100000)
 l = threading.Lock()
 printLock = threading.Lock()
 processed=0
@@ -65,6 +65,17 @@ class PageHandler(xml.sax.handler.ContentHandler):
 	def handleTagWithinPage(self,name):
 		if name == "redirect":
 			self.attrs["redirect"]="1"
+		elif name == "title":
+			self.escapeTabs()
+			#extracts namespace
+			titleInfo = self.buffer.split(":")
+			if len(titleInfo) == 2:
+				#there is another namespace besides main
+				self.attrs["namespace"] = titleInfo[0]
+				self.attrs["title"] = titleInfo[1]
+			else:
+				self.attrs["namespace"] = "Main"
+				self.attrs["title"] = titleInfo[0]	
 		else:
 			self.attrs[name]=self.buffer
 		
@@ -75,7 +86,7 @@ class PageHandler(xml.sax.handler.ContentHandler):
 			self.attrs["redirect"]="0"
 		
 		
-		writeSpecifiedDictValuesToFile(self.attrs,["id","title","redirect"],self.pageFile,self.encoding)
+		writeSpecifiedDictValuesToFile(self.attrs,["id","title","namespace","redirect"],self.pageFile,self.encoding)
 		#writeDictValsToFile(self.attrs,self.pageFile)
 		
 		self.attrs={}
@@ -88,14 +99,16 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		if "minor" not in self.revattrs.keys():
 			self.revattrs["minor"]=0
 		
-		if "comment" not in self.revattrs.keys():
-			self.revattrs["comment"]=""
+		#if "comment" not in self.revattrs.keys():
+		#	self.revattrs["comment"]=""
 		
-		writeSpecifiedDictValuesToFile(self.revattrs,["id","pageid","ed_id","ed_ip","minor","timestamp","comment"],self.revisionFile,self.encoding)
+		writeSpecifiedDictValuesToFile(self.revattrs,["id","pageid","ed_id","ed_username","minor","timestamp","comment"],self.revisionFile,self.encoding)
 		
 		if "ed_id" in self.revattrs.keys():
-			self.editors[self.revattrs["ed_id"]]=self.revattrs["ed_username"]
-		
+			self.editors[self.revattrs["ed_username"]]=self.revattrs["ed_id"]
+		else:
+			self.editors[self.revattrs["ed_username"]]="\N"
+			
 		if "text" in self.revattrs.keys():
 			
 			self.revisionsParsed+=1
@@ -120,7 +133,14 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		elif name == "contributor":
 			self.inContributor = False
 		elif self.inContributor:
-			self.revattrs["ed_"+name]=self.buffer
+			if name == "username":
+			    self.escapeTabs()
+			    self.revattrs["ed_username"] = self.buffer
+			if name == "ip":
+			    self.revattrs["ed_username"] = self.buffer
+			else:
+			    #name = "id"
+			    self.revattrs["ed_id"]=self.buffer
 		else:
 			self.revattrs[name]=self.buffer
 	
@@ -129,6 +149,11 @@ class PageHandler(xml.sax.handler.ContentHandler):
 			st = u"{0}\t{1}\n".format(ed[0],ed[1])
 			st = st.encode(self.encoding)
 			self.editorFile.write(st)
+
+	def escapeTabs(self):
+	    #changes \t to \\t for postgres
+	    self.buffer = self.buffer.replace("\t", "\\t").replace("\N","\\N")
+		
 	
 def writeSpecifiedDictValuesToFile(d,vals,f,encoding):
 	global totalWrite
@@ -139,8 +164,10 @@ def writeSpecifiedDictValuesToFile(d,vals,f,encoding):
 			if not isinstance(d[a],basestring):
 				d[a]=str(d[a])
 			st = (d[a]+u"\t").encode(encoding)
-			#f.write(st)
-		f.write(st)
+			f.write(st)
+		else:
+			st = "\N\t".encode(encoding)
+			f.write(st)
 	f.write(u"\n")
 	totalWrite+=time.time()-swrite
 
@@ -295,7 +322,7 @@ class FileCompress(threading.Thread):
 			
 				compressed = bz2.compress(nextFile[2])
 
-				path = "{0}/{1}/{2}.txt.bz2".format(self.basepath,nextFile[1][:2],nextFile[1][2:])
+				path = "{0}/{1}/{2}.txt.bz2".format(self.basepath,nextFile[1][:2],nextFile[1])
 			
 			# Write the file ourselves
 				#f = open(path,"w")
@@ -321,9 +348,9 @@ def main():
 	
 	for i in range(100):
 		if i >= 10:
-			pth = "{0}/{1}/".format(outpath,str(i))
+			pth = "/{0}/{1}/".format(outpath,str(i))
 		else:
-			pth = "{0}/0{1}/".format(outpath,str(i))
+			pth = "/{0}/0{1}/".format(outpath,str(i))
 		if not os.path.exists(pth):
 		    os.makedirs(pth)
 	
@@ -331,7 +358,7 @@ def main():
 
 	PrintThread().start()
 	
-	path = "/wikigroup/enwiki-latest-pages-articles1.xml.bz2"
+	path = "/wikigroup/enwiki-20110405-pages-meta-current2.xml.bz2"
 #	path = "enwiki-20100130-pages-meta-history.xml.bz2"
 #	path = "enwiki-latest-stub-articles1.xml.bz2"
 	
