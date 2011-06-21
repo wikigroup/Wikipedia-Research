@@ -11,6 +11,7 @@ import cProfile
 parseQ = Queue.Queue(5)
 compressQ = Queue.Queue()
 printQ = Queue.Queue()
+writeQ = Queue.Queue()
 l = threading.Lock()
 printLock = threading.Lock()
 processed=0
@@ -241,12 +242,37 @@ class ParseThread(threading.Thread):
 			else:
 				parseQ.task_done()
 		
-
 class FileWrite(threading.Thread):
-	def __init__(self,writernum):
+	def __init__(self):
+		threading.Thread.__init__(self)
+		self.setName("File Writer")
+		self.written=0
+		
+	def run(self):
+		while True:
+			try:
+				nextFile = writeQ.get(True,5)
+			except Queue.Empty:
+				printQ.put("{0} has had nothing to do for five seconds... terminating.".format(self.getName()))
+				break
+			else:
+				# nextFile[0] is write path
+				# nextFile[1] is file contents
+				
+				f = open(nextFile[0],"w")
+				f.write(nextFile[1])
+				f.close()
+				writeQ.task_done()
+				self.written+=1
+				printQ.put("{0:30} file written to disk.  File number {1:6}.".format(nextFile[0],self.written))
+		
+
+class FileCompress(threading.Thread):
+	def __init__(self,writernum,basepath):
 		threading.Thread.__init__(self)
 		self.writernum = writernum
-		self.setName("File Writer {0}".format(writernum))
+		self.basepath = basepath
+		self.setName("File Compressor {0}".format(writernum))
 		
 	def run(self):
 		global processed
@@ -254,9 +280,7 @@ class FileWrite(threading.Thread):
 			try:
 				nextFile = compressQ.get(True,5)
 			except Queue.Empty:
-				printLock.acquire()
 				printQ.put("{0} has had nothing to do for five seconds... terminating.".format(self.getName()))
-				printLock.release()
 				break
 			else:
 				# nextFile[0] should be the page title
@@ -265,24 +289,29 @@ class FileWrite(threading.Thread):
 			
 				compressed = bz2.compress(nextFile[2])
 
-				path = "/wikigroup/testoutput/"+nextFile[1][:2]+"/"+nextFile[1][2:]+".txt.bz2"
-				f = open(path,"w")
-
-				f.write(compressed)
+				path = "{0}/{1}/{2}.txt.bz2".format(self.basepath,nextFile[1][:2],nextFile[1][2:])
 			
+			# Write the file ourselves
+				#f = open(path,"w")
+				#f.write(compressed)
+				#f.close()
+				
+			
+			# Our put it in the writeQ for the FileWriter thread to handle	
+				writeQ.put((path,compressed))
+			
+				printQ.put("{0:9} file compressed by {1}.  File number {2:6}.".format(nextFile[1],self.writernum,processed))
 				l.acquire()
-				printQ.put("{0:30} file written by {1}.  File number {2:6}.".format(path,self.writernum,processed))
 				processed+=1
 				l.release()
 				
-				f.close()
 				compressQ.task_done()
 				
 	
 def main():
 #	import yappi
 	
-	outpath = "/wikigroup/testoutput/"
+	outpath = "/wikigroup/testoutput"
 	
 	for i in range(100):
 		if i >= 10:
@@ -304,15 +333,21 @@ def main():
 	
 	FileReadDecompress(path,10000000).start()
 	ParseThread("pages.dat","revisions.dat","editors.dat").start()
-
-	for i in range(40):
-			FileWrite(i).start()
-		
+	
+	for i in range(6):
+		FileCompress(i,outpath).start()
+	
+	#for i in range(3):
+	FileWrite().start()
 	
 	time.sleep(5)
 	
 	parseQ.join()
+	print "ParseQ Empty"
 	compressQ.join()
+	print "CompressQ Empty"
+	writeQ.join()
+	print "WriteQ Empty"
 	
 #	stats = yappi.get_stats()
 #	for stat in stats:
