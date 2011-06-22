@@ -5,13 +5,12 @@ import threading
 import bz2
 import Queue
 import os
-import cProfile
-
+import csv
 
 parseQ = Queue.Queue(5)
-compressQ = Queue.Queue()
-printQ = Queue.Queue()
-writeQ = Queue.Queue()
+compressQ = Queue.Queue(100000)
+printQ = Queue.Queue(100000)
+writeQ = Queue.Queue(100000)
 l = threading.Lock()
 printLock = threading.Lock()
 processed=0
@@ -22,9 +21,22 @@ totalEnQ = 0
 
 class PageHandler(xml.sax.handler.ContentHandler):
 	def __init__(self,pageFile,revisionFile,editorFile,encoding="utf-8"):
+		encodedtab = u"\t".encode(encoding)
+		
+		csv.register_dialect("TabDelim",delimiter=encodedtab,quoting=csv.QUOTE_NONE,escapechar="\\")
+		
 		self.editors = {}
-		self.pageFile = pageFile
-		self.revisionFile = revisionFile
+		
+		self.pageOutputFields=["id","title","namespace","redirect"]
+		self.pageWriter = csv.DictWriter(pageFile,fieldnames=self.pageOutputFields,\
+										restval="",extrasaction='ignore',dialect="TabDelim")
+		
+		
+		
+		self.revisionOutputFields=["id","pageid","ed_id","ed_username","minor","timestamp","comment"]
+		self.revisionWriter = csv.DictWriter(revisionFile,fieldnames=self.revisionOutputFields,\
+											restval="",extrasaction='ignore',dialect="TabDelim")
+		
 		self.editorFile = editorFile
 		self.attrs = {}
 		self.revattrs = {}
@@ -32,6 +44,7 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		self.inContributor = False
 		self.encoding = encoding
 		self.revisionsParsed= 0
+		self.articleRevisions = []
 
 	def startElement(self, name, attributes):
 		if name =="revision":
@@ -65,6 +78,20 @@ class PageHandler(xml.sax.handler.ContentHandler):
 	def handleTagWithinPage(self,name):
 		if name == "redirect":
 			self.attrs["redirect"]="1"
+		elif name == "title":
+			#extracts namespace
+			titleInfo = self.buffer.split(":")
+			if len(titleInfo) == 2:
+				#there is another namespace besides main
+				self.attrs["namespace"] = titleInfo[0]
+				self.attrs["title"] = titleInfo[1]
+			else:
+				self.attrs["namespace"] = "Main"
+				self.attrs["title"] = titleInfo[0]
+		elif name == "id":
+			while len(self.buffer)<4:
+				self.buffer = "0"+self.buffer
+			self.attrs["id"]=self.buffer
 		else:
 			self.attrs[name]=self.buffer
 		
@@ -74,11 +101,32 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		if "redirect" not in self.attrs.keys():
 			self.attrs["redirect"]="0"
 		
+		encodeSpecifiedDictValues(self.attrs,self.pageOutputFields,self.encoding)
+		self.pageWriter.writerow(self.attrs)
 		
-		writeSpecifiedDictValuesToFile(self.attrs,["id","title","redirect"],self.pageFile,self.encoding)
-		#writeDictValsToFile(self.attrs,self.pageFile)
+		output = self.generatePageXML()
 		
+		compressQ.put((self.attrs["id"],output))
+		
+		# Old way before csv was introduced
+		#writeSpecifiedDictValuesToFile(self.attrs,["id","title","namespace","redirect"],self.pageFile,self.encoding)
+		
+		self.articleRevisions=[]
 		self.attrs={}
+	
+	def generatePageXML(self):
+		xmloutput = []
+		xmloutput.append("<page id='{0}'>\n".format(self.attrs["id"]))
+		for rev in self.articleRevisions:
+			xmloutput.append("\t<revision id='{0}'>\n".format(rev[0]))
+			xmloutput.append(rev[1])
+			xmloutput.append("\n\t</revision>\n")
+		xmloutput.append("</page>\n")
+		
+		st = "".join(xmloutput)
+		st = st.encode(self.encoding)
+		
+		return st
 	
 	def handleEndOfRevision(self):
 		
@@ -86,63 +134,83 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		self.revattrs["pageid"]=self.attrs["id"]
 
 		if "minor" not in self.revattrs.keys():
-			self.revattrs["minor"]=0
+			self.revattrs["minor"]="0"
 		
-		if "comment" not in self.revattrs.keys():
-			self.revattrs["comment"]=""
+		#if "comment" not in self.revattrs.keys():
+		#	self.revattrs["comment"]=""
 		
-		writeSpecifiedDictValuesToFile(self.revattrs,["id","pageid","ed_id","ed_ip","minor","timestamp","comment"],self.revisionFile,self.encoding)
+		encodeSpecifiedDictValues(self.revattrs,self.revisionOutputFields,self.encoding)
+		self.revisionWriter.writerow(self.revattrs)
+		
+		#writeSpecifiedDictValuesToFile(self.revattrs,["id","pageid","ed_id","ed_username","minor","timestamp","comment"],self.revisionFile,self.encoding)
 		
 		if "ed_id" in self.revattrs.keys():
-			self.editors[self.revattrs["ed_id"]]=self.revattrs["ed_username"]
-		
+			self.editors[self.revattrs["ed_username"]]=self.revattrs["ed_id"]
+		else:
+			self.editors[self.revattrs["ed_username"]]=""
+			
 		if "text" in self.revattrs.keys():
 			
 			self.revisionsParsed+=1
+			
+			self.articleRevisions.append((self.revattrs["id"],self.revattrs["text"]))
+			
 			printQ.put("Revision {0:9} sent to compression queue.  {1:6} Revisions Processed.".format(self.revattrs["id"],self.revisionsParsed))
 			
-			title = self.attrs["title"].encode(self.encoding)
-			text = self.revattrs["text"].encode(self.encoding)
-			
-			global totalEnQ
-			sEnQ = time.time()
-			compressQ.put((title,self.revattrs["id"],text))
-			eEnQ = time.time()
-			totalEnQ += eEnQ - sEnQ
+			# title = self.attrs["title"].encode(self.encoding)
+			# text = self.revattrs["text"].encode(self.encoding)
+			# 
+			# global totalEnQ
+			# sEnQ = time.time()
+			# compressQ.put((title,self.revattrs["id"],text))
+			# eEnQ = time.time()
+			# totalEnQ += eEnQ - sEnQ
 			
 		self.revattrs={}
 	
 	def handleTagWithinRevision(self,name):
 		if name == "timestamp":
-			self.revattrs["timestamp"] = self.buffer[0:10]+" "+self.buffer[11:-1]
+			self.revattrs["timestamp"] = "{0} {1}".format(self.buffer[0:10],self.buffer[11:-1])
 		elif name == "minor":
-			self.revattrs["minor"]=1
+			self.revattrs["minor"]="1"
 		elif name == "contributor":
 			self.inContributor = False
 		elif self.inContributor:
-			self.revattrs["ed_"+name]=self.buffer
+			if name == "username":
+			    #self.escapeTabs()
+			    self.revattrs["ed_username"] = self.buffer
+			if name == "ip":
+			    self.revattrs["ed_username"] = self.buffer
+			else:
+			    #name = "id"
+			    self.revattrs["ed_id"]= self.buffer
 		else:
+			#self.escapeTabs()
 			self.revattrs[name]=self.buffer
 	
 	def makeEditorsFile(self):
+		printQ.put("Making Editors File...")
+		encodedtab = "\t".encode(self.encoding)
+		encodednewline = "\n".encode(self.encoding)
+		
 		for ed in self.editors.iteritems():
-			st = ed[0]+u"\t"+ed[1]+u"\n"
-			st = st.encode(self.encoding)
+			st = "{0}{1}{2}{3}\n".format(ed[0],encodedtab,ed[1],encodednewline)
+		#	st = st.encode(self.encoding)
 			self.editorFile.write(st)
+		printQ.put("Editors File Complete...")
+
+	def escapeTabs(self):
+		#changes \t to \\t for postgres
+
+		toEscape = ["\\","\t","\n","\r","\N"]
+		
+		for escape in toEscape:
+			self.buffer = self.buffer.replace(escape,"\\"+escape)
 	
-def writeSpecifiedDictValuesToFile(d,vals,f,encoding):
-	global totalWrite
-	
-	swrite = time.time()
-	for a in vals:
-		if a in d.keys():
-			if not isinstance(d[a],basestring):
-				d[a]=str(d[a])
-			st = (d[a]+u"\t").encode(encoding)
-			#f.write(st)
-		f.write(st)
-	f.write(u"\n")
-	totalWrite+=time.time()-swrite
+def encodeSpecifiedDictValues(dct,keylist,encoding):
+	for key in keylist:
+		if key in dct.keys():
+			dct[key]=dct[key].encode(encoding)
 
 class PrintThread(threading.Thread):
 	def __init__(self):
@@ -150,7 +218,6 @@ class PrintThread(threading.Thread):
 		self.setName("Printer")
 		self.setDaemon(True)
 		
-	
 	def run(self):
 		while True:
 			try:
@@ -167,7 +234,6 @@ class FileReadDecompress(threading.Thread):
 		self.path = path
 		self.chunksize = chunksize
 		self.setName("File Reader and Decompressor")
-		
 		
 	def run(self):
 		global totalCompression
@@ -193,34 +259,18 @@ class FileReadDecompress(threading.Thread):
 class ParseThread(threading.Thread):
 	def __init__(self,pagefile,revfile,edfile):
 		threading.Thread.__init__(self)
-		self.pagefile = open(pagefile,"w")
+		self.pagefile = open(pagefile,'w')
 		self.revfile = open(revfile,"w")
 		self.edfile = open(edfile,"w")
 		self.setName("Parser")
 		
 	def run(self):
 		self.runParser()
-		#cProfile.run("self.runParser()")
 		
 	def runParser(self):
 		parser = xml.sax.make_parser()
 		handler = PageHandler(self.pagefile,self.revfile,self.edfile)
 		parser.setContentHandler(handler)
-		
-		#decom = bz2.BZ2Decompressor()
-		
-		# with open("enwiki-latest-stub-articles1.xml.bz2") as infile:
-		# 	data = infile.read(1000000)
-		# 	while data != "":
-		# 		data = decom.decompress(data)
-		# 		parser.feed(data)
-		# 		data = infile.read(1000000)
-		 
-	#
-		# for line in infile:
-		# 	dec = decom.decompress(line)
-		# 	parser.feed(dec)
-		
 		
 		while True:
 			try:
@@ -233,7 +283,7 @@ class ParseThread(threading.Thread):
 				
 				global totalParse
 				totalParse += eparse-sparse
-				printQ.put("Another 10MB Parsed!")
+				#printQ.put("Another 10MB Parsed!")
 				
 			except Queue.Empty:
 				[f.close() for f in [self.pagefile,self.revfile,self.edfile]]
@@ -258,13 +308,17 @@ class FileWrite(threading.Thread):
 			else:
 				# nextFile[0] is write path
 				# nextFile[1] is file contents
+				self.procFile(nextFile[0],nextFile[1])
 				
-				f = open(nextFile[0],"w")
-				f.write(nextFile[1])
-				f.close()
-				writeQ.task_done()
-				self.written+=1
-				printQ.put("{0:30} file written to disk.  File number {1:6}.".format(nextFile[0],self.written))
+	
+	def procFile(self,path,content):
+		f = open(path,"w")
+		f.write(content)
+		f.close()
+		writeQ.task_done()
+		printQ.put("{0:40} file written to disk.  File number {1:6}.".format(path,self.written))
+		
+		self.written+=1
 		
 
 class FileCompress(threading.Thread):
@@ -283,58 +337,57 @@ class FileCompress(threading.Thread):
 				printQ.put("{0} has had nothing to do for five seconds... terminating.".format(self.getName()))
 				break
 			else:
-				# nextFile[0] should be the page title
-				# nextFile[1] should be the revision ID
-				# nextFile[2] should be the contents of the file
+				# nextFile[0] should be the page id
+				# nextFile[1] should be XML output for the page
 			
-				compressed = bz2.compress(nextFile[2])
+				compressed = bz2.compress(nextFile[1])
 
-				path = "{0}/{1}/{2}.txt.bz2".format(self.basepath,nextFile[1][:2],nextFile[1][2:])
+				path = "{0}/{1}/{2}/{3}.txt.bz2".format(self.basepath,nextFile[0][:2],nextFile[0][2:4],nextFile[0])
 			
-			# Write the file ourselves
-				#f = open(path,"w")
-				#f.write(compressed)
-				#f.close()
-				
-			
-			# Our put it in the writeQ for the FileWriter thread to handle	
 				writeQ.put((path,compressed))
 			
-				printQ.put("{0:9} file compressed by {1}.  File number {2:6}.".format(nextFile[1],self.writernum,processed))
+				printQ.put("{0:9} file compressed by {1}.  File number {2:6}.".format(nextFile[0],self.writernum,processed))
 				l.acquire()
 				processed+=1
 				l.release()
 				
 				compressQ.task_done()
 				
-	
-def main():
-#	import yappi
-	
-	outpath = "/wikigroup/testoutput"
+def make100numbereddirs(basepath):
 	
 	for i in range(100):
 		if i >= 10:
-			pth = outpath+str(i)+"/"
+			pth = "/{0}/{1}/".format(basepath,str(i))
 		else:
-			pth =outpath +"0"+str(i)+"/"
+			pth = "/{0}/0{1}/".format(basepath,str(i))
 		if not os.path.exists(pth):
 		    os.makedirs(pth)
+
+def main():
+	import yappi
+	
+	outpath = "/wikigroup/testoutput"
+	
+	make100numbereddirs(outpath)
+	
+	for i in range(100):
+		if i >= 10:
+			make100numbereddirs("{0}/{1}".format(outpath,i))
+		else:
+			make100numbereddirs("{0}/0{1}".format(outpath,i))
 	
 	start = time.time()
 
 	PrintThread().start()
 	
-	path = "/wikigroup/enwiki-latest-pages-articles1.xml.bz2"
-#	path = "enwiki-20100130-pages-meta-history.xml.bz2"
-#	path = "enwiki-latest-stub-articles1.xml.bz2"
+	path = "/wikigroup/enwiki-20110405-pages-meta-current2.xml.bz2"
 	
-#	yappi.start()
+	# yappi.start()
 	
 	FileReadDecompress(path,10000000).start()
 	ParseThread("pages.dat","revisions.dat","editors.dat").start()
 	
-	for i in range(6):
+	for i in range(3):
 		FileCompress(i,outpath).start()
 	
 	#for i in range(3):
@@ -349,11 +402,11 @@ def main():
 	writeQ.join()
 	print "WriteQ Empty"
 	
-#	stats = yappi.get_stats()
-#	for stat in stats:
-#		print stat
-#	yappi.stop()
-	
+	# stats = yappi.get_stats()
+	# for stat in stats:
+	# 	print stat
+	# yappi.stop()
+	# 
 	
 	print " Runtime: " +str(time.time()-start) +" seconds."
 	global totalCompression
