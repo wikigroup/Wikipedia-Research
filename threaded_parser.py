@@ -9,15 +9,28 @@ import csv
 
 parseQ = Queue.Queue(5)
 compressQ = Queue.Queue(100000)
-printQ = Queue.Queue(100000)
+printQ = Queue.Queue()
 writeQ = Queue.Queue(100000)
-l = threading.Lock()
+
+chunkDecompressionCounterLock = threading.Lock()
+compressionCounterLock = threading.Lock()
+revisionCounterLock = threading.Lock()
+pageCounterLock = threading.Lock()
+writingCounterLock = threading.Lock()
 printLock = threading.Lock()
-processed=0
+
+chunksDecompressed=0
+dataParsed=0
+filesCompressed=0
+revisionsParsed=0
+pagesParsed=0
+pagesWrittenOut=0
+startTime=0
+messages = []
+
+
 totalCompression = 0
 totalParse = 0
-totalWrite = 0
-totalEnQ = 0
 
 class PageHandler(xml.sax.handler.ContentHandler):
 	def __init__(self,pageFile,revisionFile,editorFile,encoding="utf-8"):
@@ -97,6 +110,7 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		
 	
 	def handleEndOfPage(self):
+		global pagesParsed
 		
 		if "redirect" not in self.attrs.keys():
 			self.attrs["redirect"]="0"
@@ -110,6 +124,10 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		
 		# Old way before csv was introduced
 		#writeSpecifiedDictValuesToFile(self.attrs,["id","title","namespace","redirect"],self.pageFile,self.encoding)
+		
+		pageCounterLock.acquire()
+		pagesParsed+=1
+		pageCounterLock.release()
 		
 		self.articleRevisions=[]
 		self.attrs={}
@@ -151,20 +169,13 @@ class PageHandler(xml.sax.handler.ContentHandler):
 			
 		if "text" in self.revattrs.keys():
 			
+			revisionCounterLock.acquire()
 			self.revisionsParsed+=1
+			revisionCounterLock.release()
 			
 			self.articleRevisions.append((self.revattrs["id"],self.revattrs["text"]))
 			
-			printQ.put("Revision {0:9} sent to compression queue.  {1:6} Revisions Processed.".format(self.revattrs["id"],self.revisionsParsed))
-			
-			# title = self.attrs["title"].encode(self.encoding)
-			# text = self.revattrs["text"].encode(self.encoding)
-			# 
-			# global totalEnQ
-			# sEnQ = time.time()
-			# compressQ.put((title,self.revattrs["id"],text))
-			# eEnQ = time.time()
-			# totalEnQ += eEnQ - sEnQ
+			#printQ.put("Revision {0:9} sent to compression queue.  {1:6} Revisions Processed.".format(self.revattrs["id"],self.revisionsParsed))
 			
 		self.revattrs={}
 	
@@ -189,24 +200,16 @@ class PageHandler(xml.sax.handler.ContentHandler):
 			self.revattrs[name]=self.buffer
 	
 	def makeEditorsFile(self):
-		printQ.put("Making Editors File...")
 		encodedtab = "\t".encode(self.encoding)
 		encodednewline = "\n".encode(self.encoding)
 		
 		for ed in self.editors.iteritems():
 			st = "{0}{1}{2}{3}\n".format(ed[0],encodedtab,ed[1],encodednewline)
-		#	st = st.encode(self.encoding)
 			self.editorFile.write(st)
-		printQ.put("Editors File Complete...")
-
-	def escapeTabs(self):
-		#changes \t to \\t for postgres
-
-		toEscape = ["\\","\t","\n","\r","\N"]
 		
-		for escape in toEscape:
-			self.buffer = self.buffer.replace(escape,"\\"+escape)
-	
+		global messages
+		messages.append("Editors File Generation Complete")
+
 def encodeSpecifiedDictValues(dct,keylist,encoding):
 	for key in keylist:
 		if key in dct.keys():
@@ -219,14 +222,28 @@ class PrintThread(threading.Thread):
 		self.setDaemon(True)
 		
 	def run(self):
+		global startTime
+		global chunksDecompressed
+		global dataParsed
+		global filesCompressed
+		global revisionsParsed
+		global pagesParsed
+		global pagesWrittenOut
+		global messages
+		
 		while True:
-			try:
-				nextToPrint = printQ.get(True)
-			except Queue.Empty:
-				break
-			else:
-				print nextToPrint
-				printQ.task_done()
+			print "--------"
+			print "Run time so far: {0}".format(int(time.time()-startTime))
+			print "Chunks Decompressed: {0}".format(chunksDecompressed)
+			print "Revisions Parsed: {0}".format(revisionsParsed)
+			print "Pages Parsed: {0}".format(pagesParsed)
+			print "Files Compressed: {0}".format(filesCompressed)
+			print "Pages Written Out: {0}".format(pagesWrittenOut)
+			print "Messages:"
+			for message in messages:
+				print message
+				
+			time.sleep(5)
 
 class FileReadDecompress(threading.Thread):
 	def __init__(self,path,chunksize):
@@ -237,6 +254,7 @@ class FileReadDecompress(threading.Thread):
 		
 	def run(self):
 		global totalCompression
+		global chunksDecompressed
 		
 		decom = bz2.BZ2Decompressor()
 		
@@ -252,6 +270,9 @@ class FileReadDecompress(threading.Thread):
 				edecom = time.time()
 				totalCompression += edecom-sdecom
 				
+				chunkDecompressionCounterLock.acquire()
+				chunksDecompressed+=1
+				chunkDecompressionCounterLock.release()
 				
 				parseQ.put(dec)
 				data = infile.read(self.chunksize)
@@ -268,26 +289,28 @@ class ParseThread(threading.Thread):
 		self.runParser()
 		
 	def runParser(self):
+		global totalParse
+		global messages
+		
 		parser = xml.sax.make_parser()
 		handler = PageHandler(self.pagefile,self.revfile,self.edfile)
 		parser.setContentHandler(handler)
 		
 		while True:
 			try:
-				printQ.put("Parser Wating...")
+				#printQ.put("Parser Wating...")
 				p = parseQ.get(True,10)
-				printQ.put("Parser Got Work..")
+				#printQ.put("Parser Got Work..")
 				sparse = time.time()
 				parser.feed(p)
 				eparse = time.time()
 				
-				global totalParse
 				totalParse += eparse-sparse
 				#printQ.put("Another 10MB Parsed!")
 				
 			except Queue.Empty:
 				[f.close() for f in [self.pagefile,self.revfile,self.edfile]]
-				printQ.put("{0} has had nothing to do for 10 seconds... terminating.".format(self.getName()))
+				messages.append("{0} has finished working.").format(self.getName())
 				break
 			else:
 				parseQ.task_done()
@@ -296,14 +319,13 @@ class FileWrite(threading.Thread):
 	def __init__(self):
 		threading.Thread.__init__(self)
 		self.setName("File Writer")
-		self.written=0
 		
 	def run(self):
 		while True:
 			try:
 				nextFile = writeQ.get(True,5)
 			except Queue.Empty:
-				printQ.put("{0} has had nothing to do for five seconds... terminating.".format(self.getName()))
+				messages.append("{0} has finished working.").format(self.getName())
 				break
 			else:
 				# nextFile[0] is write path
@@ -312,13 +334,16 @@ class FileWrite(threading.Thread):
 				
 	
 	def procFile(self,path,content):
+		global pagesWrittenOut
 		f = open(path,"w")
 		f.write(content)
 		f.close()
 		writeQ.task_done()
-		printQ.put("{0:40} file written to disk.  File number {1:6}.".format(path,self.written))
+		# "{0:40} file written to disk.  File number {1:6}.".format(path,self.written)
 		
-		self.written+=1
+		writingCounterLock.acquire()
+		pagesWrittenOut+=1
+		writingCounterLock.release()
 		
 
 class FileCompress(threading.Thread):
@@ -329,12 +354,12 @@ class FileCompress(threading.Thread):
 		self.setName("File Compressor {0}".format(writernum))
 		
 	def run(self):
-		global processed
+		global filesCompressed
 		while True:
 			try:
 				nextFile = compressQ.get(True,5)
 			except Queue.Empty:
-				printQ.put("{0} has had nothing to do for five seconds... terminating.".format(self.getName()))
+				messages.append("{0} has finished working.").format(self.getName())
 				break
 			else:
 				# nextFile[0] should be the page id
@@ -346,10 +371,11 @@ class FileCompress(threading.Thread):
 			
 				writeQ.put((path,compressed))
 			
-				printQ.put("{0:9} file compressed by {1}.  File number {2:6}.".format(nextFile[0],self.writernum,processed))
-				l.acquire()
-				processed+=1
-				l.release()
+				#printQ.put("{0:9} file compressed by {1}.  File number {2:6}.".format(nextFile[0],self.writernum,processed))
+				
+				compressionCounterLock.acquire()
+				filesCompressed+=1
+				compressionCounterLock.release()
 				
 				compressQ.task_done()
 				
@@ -364,7 +390,7 @@ def make100numbereddirs(basepath):
 		    os.makedirs(pth)
 
 def main():
-	import yappi
+	global startTime
 	
 	outpath = "/wikigroup/testoutput"
 	
@@ -376,7 +402,7 @@ def main():
 		else:
 			make100numbereddirs("{0}/0{1}".format(outpath,i))
 	
-	start = time.time()
+	startTime = time.time()
 
 	PrintThread().start()
 	
@@ -390,7 +416,6 @@ def main():
 	for i in range(3):
 		FileCompress(i,outpath).start()
 	
-	#for i in range(3):
 	FileWrite().start()
 	
 	time.sleep(5)
@@ -408,14 +433,10 @@ def main():
 	# yappi.stop()
 	# 
 	
-	print " Runtime: " +str(time.time()-start) +" seconds."
+	print " Runtime: " +str(time.time()-startTime) +" seconds."
 	global totalCompression
 	global totalParse
-	global totalWrite
-	global totalEnQ
 	print "Compression Took {0} seconds".format(totalCompression)
 	print "Parsing Took {0} secconds".format(totalParse)
-	print "Writing Took {0} seconds".format(totalWrite)
-	print "EnQ Took {0} seconds".format(totalEnQ)
 
 main()
