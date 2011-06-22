@@ -118,10 +118,10 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		xmloutput = []
 		xmloutput.append("<page id='{0}'>\n".format(self.attrs["id"]))
 		for rev in self.articleRevisions:
-			xmloutput.append("\t<revision id={0}>\n".format(rev[0]))
+			xmloutput.append("\t<revision id='{0}'>\n".format(rev[0]))
 			xmloutput.append(rev[1])
-			xmloutput.append("\t</revision>\n")
-		xmloutput.append("</page>")
+			xmloutput.append("\n\t</revision>\n")
+		xmloutput.append("</page>\n")
 		
 		st = "".join(xmloutput)
 		st = st.encode(self.encoding)
@@ -380,7 +380,7 @@ def main():
 
 	PrintThread().start()
 	
-	path = "/wikigroup/enwiki-latest-pages-articles1.xml.bz2"
+	path = "/wikigroup/enwiki-20110405-pages-meta-current2.xml.bz2"
 	
 	# yappi.start()
 	
