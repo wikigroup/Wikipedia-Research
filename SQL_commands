@@ -1,0 +1,49 @@
+CREATE TABLE pages (
+pageID int, 
+title text NOT NULL, 
+redirect bool NOT NULL, 
+extraSpace text
+);
+
+
+\copy pages from 'pageout.dat' using delimiters E'\t';
+
+
+CREATE TABLE editors (
+editorID text,
+username text
+);
+
+\copy editors from 'editors.dat' using delimiters E'\t';
+
+
+
+CREATE TABLE revisions(
+revisionID int, 
+pageID int, 
+editorID text, 
+editorName text,
+minor bool,
+timestamp timestamp,
+comment text,
+);
+
+\copy revisions from 'revisions.dat' using delimiters E'\t';
+
+
+####CREATE INDEXES -- it seems like they will make nearly all queries and table joins much faster, but will create overhead and slow down statements like insert.  Seems like a good trade off.
+
+create index __nameforindex__ on __tablename__ (__columnname__)
+
+####Playing around with getting rid of duplicates:
+
+CREATE TABLE nRevisions(
+revisionID int, 
+pageID int, 
+editorID text, 
+editorName text,
+minor bool,
+timestamp timestamp,
+comment text,
+);
+

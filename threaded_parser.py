@@ -22,10 +22,6 @@ procid = sys.argv[2]
 
 messages = []
 
-
-totalCompression = 0
-totalParse = 0
-
 class PageHandler(xml.sax.handler.ContentHandler):
 	def __init__(self,flatFileOutPath,encoding="utf-8",writeOutInterval=1000000):
 		encodedtab = "\t".encode(encoding)
@@ -91,7 +87,6 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		self.buffer.append(data)
 
 	def endElement(self, name):
-		#print "Found a",name+":",self.buffer[:50]
 		self.buffer = "".join(self.buffer)
 		
 		if name == "page":
@@ -264,9 +259,12 @@ class StatusUpdater(threading.Thread):
 			print("Messages:")
 			for message in self.messages:
 				print(message)
-				
+			
+			sys.stdout.flush()
+			os.fsync(sys.stdout.fileno())
+			
 			time.sleep(5)
-		
+			
 	def getNewNotifications(self):
 		while True:
 			try:
@@ -308,25 +306,14 @@ class FileReadDecompress(threading.Thread):
 		self.chunksize = chunksize
 		self.setName("File Reader and Decompressor")
 		
-	def run(self):
-		global totalCompression
-		
+	def run(self):		
 		decom = bz2.BZ2Decompressor()
 		
 		with open(self.path) as infile:
-			# for line in infile:
-			# 	dec = decom.decompress(line)
-			# 	parseQ.put(dec)
-
 			data = infile.read(self.chunksize)
 			while data != "":
-				sdecom = time.time()
 				dec = decom.decompress(data)
-				edecom = time.time()
-				totalCompression += edecom-sdecom
-				
 				statusQ.appendleft(("chunksDecompressed","increment"))
-				
 				parseQ.put(dec)
 				data = infile.read(self.chunksize)
 
@@ -340,7 +327,6 @@ class ParseThread(ContingentShutdownThread):
 		self.runParser()
 		
 	def runParser(self):
-		global totalParse
 		global flatOutPath
 		
 		parser = xml.sax.make_parser()
@@ -350,12 +336,7 @@ class ParseThread(ContingentShutdownThread):
 		while True:
 			try:
 				p = parseQ.get(True,5)
-				sparse = time.time()
 				parser.feed(p)
-				eparse = time.time()
-				
-				totalParse += eparse-sparse
-				
 			except Queue.Empty:
 				if self.canDie():
 					statusQ.appendleft(("messages",("{0} has finished working.".format(self.getName()))))
