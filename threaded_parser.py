@@ -247,8 +247,8 @@ class StatusUpdater(threading.Thread):
 			self.getNewNotifications()
 			
 			secs = int(time.time()-self.startTime)
+			hrs = secs/3600
 			mins = secs%3600/60
-			hrs = mins/60
 			secs = secs - hrs*3600 - mins*60
 			
 			print("--------")
