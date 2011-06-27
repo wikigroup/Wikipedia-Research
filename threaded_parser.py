@@ -7,6 +7,7 @@ import Queue
 import os
 import csv
 import collections
+from multiprocessing import Process, Pipe, Pool
 
 parseQ = Queue.Queue(5)
 compressQ = Queue.Queue(10000)
@@ -16,14 +17,14 @@ writeQ = Queue.Queue(10000)
 #inpath = "../enwiki-latest-pages-articles1.xml.bz2"
 inpath = sys.argv[1]
 # inpath= "/wikigroup/enwiki-20110405-pages-meta-history11.xml.bz2"
-outpath = "/wikigroup/testoutput"
-flatOutPath = "/wikigroup/flatoutput"
+outpath = "/tmp/testoutput"
+flatOutPath = "/tmp/flatoutput"
 procid = sys.argv[2]
 
 messages = []
 
 class PageHandler(xml.sax.handler.ContentHandler):
-	def __init__(self,flatFileOutPath,encoding="utf-8",writeOutInterval=1000000):
+	def __init__(self,flatFileOutPath,textOutputPath,encoding="utf-8",writeOutInterval=1000000):
 		encodedtab = "\t".encode(encoding)
 		
 		csv.register_dialect("TabDelim",delimiter=encodedtab,quoting=csv.QUOTE_NONE,escapechar="\\")
@@ -34,12 +35,13 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		self.inRevision = False
 		self.inContributor = False
 		self.encoding = encoding
-		self.articleRevisions = []
 		self.writeOutNum = 0
 		self.writeOutInterval = writeOutInterval
-		
+		self.textOutputPath = textOutputPath
 		self.flatFileOutPath = flatFileOutPath
 		self.initializeWriters()
+		self.writerPool = Pool(processes=10)
+		
 		
 	def initializeWriters(self):
 		global procid
@@ -80,7 +82,7 @@ class PageHandler(xml.sax.handler.ContentHandler):
 			# If this is a deleted user, set the username to the special deleted user dummy
 			if "deleted" in attributes and attributes.getValue("deleted")=="deleted":
 				self.revattrs["ed_username"] = "**DELETED_USER"
-
+			
 		self.buffer=[]
 
 	def characters(self, data):
@@ -111,11 +113,27 @@ class PageHandler(xml.sax.handler.ContentHandler):
 			while len(self.buffer)<4:
 				self.buffer = "0"+self.buffer
 			self.attrs["id"]=self.buffer
-			
+			self.openCompressedOutputFile()
 			statusQ.appendleft(("currentParsePageID",self.attrs["id"]))
 		else:
 			self.attrs[name]=self.buffer
 	
+	def openCompressedOutputFile(self):
+		global writerReceiver
+		
+		path = "{0}/{1}/{2}/{3}.txt.bz2"\
+			.format(self.textOutputPath,self.attrs["id"][:2],self.attrs["id"][2:4],self.attrs["id"])
+		
+		self.toWriter, writerReceiver = Pipe()
+		
+		#while active_children()<5:
+		#	thread.sleep(.01)
+			
+		#p = Process(target=pipedFileWriter,args=(writerReceiver,path)).start()
+			
+		self.writerPool.apply_async(pipedFileWriter,(path))
+		self.toWriter.send("<page id='{0}'>\n".format(self.buffer))
+		
 	def handleTitle(self):
 		#extracts namespace
 		titleInfo = self.buffer.split(":")
@@ -135,29 +153,26 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		encodeSpecifiedDictValues(self.attrs,self.pageOutputFields,self.encoding)
 		self.pageWriter.writerow(self.attrs)
 		
-		output = self.generatePageXML()
+		self.toWriter.send("\t</page>")
+		self.toWriter.close()
 		
-		bigfile = len(self.articleRevisions)>5000
-		compressQ.put((self.attrs["id"],output,bigfile))
 		
-		if bigfile:
-			statusQ.appendleft(("messages","{0} ({1}) is going to use the streaming compressor.  Delays possible.".format(self.attrs["id"],self.attrs["title"].encode(self.encoding))))
+		# if bigfile:
+		# 	statusQ.appendleft(("messages","{0} ({1}) is going to use the streaming compressor.  Delays possible."\
+		# 			.format(self.attrs["id"],self.attrs["title"].encode(self.encoding))))
 		
 		if self.revisionsSinceLastWriteOut > self.writeOutInterval:
 			self.writeOutIntermediateResults()
 		
 		statusQ.appendleft(("pagesParsed","increment"))
-		self.articleRevisions=[]
 		self.attrs={}
+		time.sleep(.1)
 	
-	def generatePageXML(self):
+	def generateRevisionXML(self):
 		xmloutput = []
-		xmloutput.append("<page id='{0}'>\n".format(self.attrs["id"]))
-		for rev in self.articleRevisions:
-			xmloutput.append("\t<revision id='{0}'>\n".format(rev[0]))
-			xmloutput.append(xml.sax.saxutils.escape(rev[1]))
-			xmloutput.append("\n\t</revision>\n")
-		xmloutput.append("</page>\n")
+		xmloutput.append("\t<revision id='{0}'>\n".format(self.revattrs["id"]))
+		xmloutput.append(xml.sax.saxutils.escape(self.revattrs["text"]))
+		xmloutput.append("\n\t</revision>\n")
 		
 		st = "".join(xmloutput)
 		st = st.encode(self.encoding)
@@ -181,7 +196,7 @@ class PageHandler(xml.sax.handler.ContentHandler):
 			
 		if "text" in list(self.revattrs.keys()):
 			statusQ.appendleft(("revisionsParsed","increment"))
-			self.articleRevisions.append((self.revattrs["id"],self.revattrs["text"]))
+			self.toWriter.send(self.generateRevisionXML())
 			
 		self.revisionsSinceLastWriteOut+=1
 		self.revattrs={}
@@ -211,6 +226,18 @@ class PageHandler(xml.sax.handler.ContentHandler):
 			#self.escapeTabs()
 			self.revattrs[name]=self.buffer
 
+def pipedFileWriter(filePath):
+	f = bz2.BZ2File(filePath,"w")
+	
+	while True:
+		try:
+			toWrite = writerReceiver.recv()
+		except EOFError:
+			f.close()
+			break
+		else:
+			f.write(toWrite)
+		
 def encodeSpecifiedDictValues(dct,keylist,encoding):
 	for key in keylist:
 		if key in list(dct.keys()):
@@ -227,7 +254,7 @@ class StatusUpdater(threading.Thread):
 		self.filesCompressed=0
 		self.revisionsParsed=0
 		self.pagesParsed=0
-		self.pagesWrittenOut=0
+		self.revisionsWrittenOut=0
 		self.startTime=0
 		self.currentParseRevisionID=0
 		self.currentParsePageID=0
@@ -249,12 +276,16 @@ class StatusUpdater(threading.Thread):
 			print("--------")
 			print("Stats for File {0}".format(inpath))
 			print("Run time so far: {0:02}:{1:02}:{2:02}".format(hrs,mins,secs))
-			print("Chunks Decompressed: {0}.  ({1} enqueued for Parsing)".format(self.chunksDecompressed,parseQ.qsize()))
+			print("Chunks Decompressed: {0}.  ({1} enqueued for Parsing)"\
+					.format(self.chunksDecompressed,parseQ.qsize()))
 			print("Revisions Parsed: {0:n}".format(self.revisionsParsed))
 			print("Pages Parsed: {0:n}".format(self.pagesParsed))
-			print("Pages Compressed: {0:n}.  ({1:n} enqueued for compression)".format(self.filesCompressed,compressQ.qsize()))
-			print("Pages Written Out: {0:n} ({1:n} enqueued for writing)".format(self.pagesWrittenOut,writeQ.qsize()))
-			print("Parser Now Serving Page/Revision: {0}/{1}: {2}").format(self.currentParsePageID,self.currentParseRevisionID,self.currentParsePageTitle.encode("utf-8"))
+			print("Pages Compressed: {0:n}.  ({1:n} enqueued for compression)"\
+					.format(self.filesCompressed,compressQ.qsize()))
+			print("Revisions Written Out: {0:n} ({1:n} enqueued for writing)"\
+					.format(self.revisionsWrittenOut,writeQ.qsize()))
+			print("Parser Now Serving Page/Revision: {0}/{1}: {2}")\
+					.format(self.currentParsePageID,self.currentParseRevisionID,self.currentParsePageTitle.encode("utf-8"))
 			print("Compressor Now Serving Page: {0}").format(self.currentCompressPageID)
 			print("Messages:")
 			for message in self.messages:
@@ -328,9 +359,9 @@ class ParseThread(ContingentShutdownThread):
 		
 	def runParser(self):
 		global flatOutPath
-		
+		global outpath
 		parser = xml.sax.make_parser()
-		handler = PageHandler(flatOutPath)
+		handler = PageHandler(flatOutPath,outpath)
 		parser.setContentHandler(handler)
 		
 		while True:
@@ -390,37 +421,34 @@ class FileCompress(ContingentShutdownThread):
 					break
 			else:
 				# nextFile[0] should be the page id
-				# nextFile[1] should be XML output for the page
-				# nextFile[2] is a flag indicating whether there are more than 2000 revisions of this page
+				# nextFile[1] should be XML output for the revision, etc...
+				# nextFile[2] should be whether or not we need to toggle the "openness" of the file
 				
 				path = "{0}/{1}/{2}/{3}.txt.bz2".format(self.basepath,nextFile[0][:2],nextFile[0][2:4],nextFile[0])
+				f = bz2.BZ2File(path,"w")
+				f.write(nextFile[1])
+				f.close()
 				
-				if nextFile[2] is False:
-					compressed = bz2.compress(nextFile[1])
-					writeQ.put((path,compressed))
-					statusQ.appendleft(("filesCompressed","increment"))
-				else:
-					self.parseMassiveFile(path,nextFile[1])
-					
+				statusQ.appendleft(("filesCompressed","increment"))
 				statusQ.appendleft(("currentCompressPageID",nextFile[0]))
+				statusQ.appendleft(("revisionsWrittenOut","increment"))
+				
 				compressQ.task_done()
 
-	def parseMassiveFile(self,path,content):
-		incremental = bz2.BZ2File(path,"w")
-		index = 0
-		st = content[index:index+20000]
-		while st != "":
-			incremental.write(st)
-			index += 20000
-			st= content[index:index+20000]
-		
-		incremental.close()
-		
-		statusQ.appendleft(("filesCompressed","increment"))
-		statusQ.appendleft(("pagesWrittenOut","increment"))
+	# def writeToFile(self,path,content,toggleOpen):
+	# 	incremental = bz2.BZ2File(path,"a")
+	# 	index = 0
+	# 	st = content[index:index+20000]
+	# 	while st != "":
+	# 		incremental.write(st)
+	# 		index += 20000
+	# 		st= content[index:index+20000]
+	# 	
+	# 	incremental.close()
+	# 	
+	# 	statusQ.appendleft(("filesCompressed","increment"))
 		
 def make100numbereddirs(basepath):
-	
 	for i in range(100):
 		if i >= 10:
 			pth = "/{0}/{1}/".format(basepath,str(i))
@@ -443,10 +471,10 @@ def launchThreads(inpath,outpath):
 	frd.start()
 	pt = ParseThread("pages.dat","revisions.dat","editors.dat",[frd])
 	pt.start()
-	for i in range(4):
-		fc = FileCompress(i,outpath,[frd,pt])
-		fc.start()
-	FileWrite([frd,pt,fc]).start()
+	# for i in range(4):
+	# 	fc = FileCompress(i,outpath,[frd,pt])
+	# 	fc.start()
+	#FileWrite([frd,pt,fc]).start()
 
 def main():
 	global inpath
