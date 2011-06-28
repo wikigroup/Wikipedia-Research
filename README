@@ -5,4 +5,6 @@ Participants: Michael Groeneman, David Long, and Laurel Orr
 
 Goal
 
-Our overall goal is to look at the information posted on wikipedia to find out more about the users and what motivates them. We want to take the most current wikipedia dump of all pages and their past revisions and insert the data into postgres SQL. We are using python version 2.6.1 and postgres 9.0.4. We first want to discover what sources of data used as citations are considered reputable to the wikipedia community. Using this information, we want to plan and write a system that looks at news from reputable sources and recommends information to post onto wikipedia pages to different users. We hope this system will help wikipedia users get more engaged in posting and help keep the content up to date. 
+Our overall goal is to look at the information posted on wikipedia to find out more about the users and what motivates them. We want to take the most current wikipedia dump of all pages and their past revisions and insert the data into postgres SQL. We are using python version 2.6.1 and postgres 9.0.4. We first want to discover what sources of data used as citations are considered reputable to the wikipedia community. Using this information, we want to plan and write a system that looks at news from reputable sources and recommends information to post onto wikipedia pages to different users. We hope this system will help wikipedia users get more engaged in posting and help keep the content up to date.
+
+Testing something Laurel
