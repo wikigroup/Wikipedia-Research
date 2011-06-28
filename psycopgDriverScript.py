@@ -21,5 +21,20 @@ class dbConnection:
 if __name__ == '__main__':
     connection = dbConnection('wikigroup', 'wiki', 'heydave', 
     'localhost', '5432')
-    myFile = open('revisions.dat')
-    connection.moveToTable(myFile, 'revisions', '\t')
+    
+    #EditorFiles = 3
+    #for i in range (EditorFiles):
+    #   myFile = open('ed' + str(i) + '_12.dat')
+    #    connection.moveToTable(myFile, 'editors', '\t')
+    
+    #RevFiles = 1
+    #for i in range (RevFiles):
+    #    myFile = open ('rv' + str(i) + '_12.dat')
+    #    connection.moveToTable(myFile, 'revisions', '\t')
+        
+    PageFiles = 1
+    for i in range(PageFiles):
+        myFile = open ('pg' + str(i) + '_12.dat')
+        connection.moveToTable(myFile, 'pages', '\t')
+        
+    connection.killConnection()
