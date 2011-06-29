@@ -10,8 +10,8 @@ from multiprocessing import Process, Pipe, Pool, Queue
 
 parseQ = Queue(5)
 statusQ = deque()
-outpath = "/tmp/testoutput"
-flatOutPath = "/tmp/flatoutput"
+outpath = "/wikigroup/textoutput"
+flatOutPath = "/wikigroup/flatoutput"
 
 class PageHandler(xml.sax.handler.ContentHandler):
 	def __init__(self,flatFileOutPath,textOutputPath,encoding="utf-8",writeOutInterval=1000000):
