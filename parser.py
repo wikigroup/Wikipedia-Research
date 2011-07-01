@@ -1,3 +1,15 @@
+'''
+This program takes a wikipedia database dump in XML format with BZ2 compression, and
+divides it into metadata, which it outputs to a tab-seaparated format, and article text, 
+which it recompresses and outputs page-by-page in a compressed XML format.
+
+Usage: python parser.py dumpfile dumpid [notext]
+Dumpfile: The location of the BZ2-compressed XML database dump
+Dumpid: An aribitrary ID (often the number of the dump chunk is used) which is appended to the end of the metadata files
+notext: An optional flag.  If this option is specified, only metadata will be aggregated (no article text will be output).
+		A 4-5x speed increase results from using this option, so it is recommended if the full article text is not needed.
+'''
+
 import xml.sax
 import time
 from datetime import timedelta
@@ -11,7 +23,7 @@ from multiprocessing import Process, Pipe, Queue
 parseQ = Queue(5)
 
 class PageHandler(xml.sax.handler.ContentHandler):
-	def __init__(self,flatFileOutPath,textOutputPath,statusUpdater,procid,encoding="utf-8",writeOutInterval=1000000):
+	def __init__(self,flatFileOutPath,textOutputPath,statusUpdater,procid,textoutput,encoding="utf-8",writeOutInterval=1000000):
 		# Dictionaries that store editor, revision, and page attributes
 		self.editors = {}
 		self.pageattrs = {}
@@ -38,8 +50,21 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		# The number of revisions queued for compression is limited to 1000 at a time.
 		# If this is exceeeded, the parser will block until space is available in the queue.
 		self.compressQ = Queue(1000)
-		# Start the file writer process
-		Process(target=fileWriter,args=(self.compressQ,textOutputPath)).start()
+		
+		# Start the file writer process, if we're going to be writing files
+		if textoutput:
+			Process(target=fileWriter,args=(self.compressQ,textOutputPath)).start()
+			self.fileWrite = self.sendToFileWriter
+		# Otherwise, we ignore calls to write to text files.
+		else:
+			statusUpdater.addMessage("Article Text Output Disabled")
+			def doesNothing(x,y=None): pass
+			self.fileWrite = doesNothing
+		
+		self.namespaces = ["Main","User","Wikipedia","File","MediaWiki","Template","Help","Category","Thread","Summary","Portal","Book"]
+		# Because the talk namespace for Main is Talk, not Main talk, we don't want to append talk to the first element of the list
+		self.namespaces = self.namespaces + [n+" talk" for n in self.namespaces[1:]]
+		self.namespaces += ["Talk"]
 		
 		self.status = statusUpdater
 		
@@ -127,7 +152,8 @@ class PageHandler(xml.sax.handler.ContentHandler):
 	
 	def handleEndMediaWiki(self):
 		# Tell the file writer that it is done with the last file, and can shut down.
-		self.sendToFileWriter(None,True)
+		self.fileWrite(None,True)
+		self.compressQ.put((None,True))
 		# Write out any remaining metadata to the revision, page, and editor files
 		self.writeOutIntermediateResults(True)
 	
@@ -140,8 +166,8 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		path = "{0}/{1}/{2}/{3}.xml.bz2"\
 			.format(self.textOutputPath,self.pageattrs["id"][:2],self.pageattrs["id"][2:4],self.pageattrs["id"])
 		# Tells the filewriter to open the file at path.
-		self.sendToFileWriter(path,True)
-		self.sendToFileWriter("<page id='{0}'>\n".format(self.buffer))
+		self.fileWrite(path,True)
+		self.fileWrite("<page id='{0}'>\n".format(self.buffer))
 		self.status.setCurrentPageID(self.pageattrs["id"])
 	
 	def sendToFileWriter(self,line,filechange=False):
@@ -151,17 +177,20 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		"""
 		self.compressQ.put((line,filechange))
 	
+	def ignoreFileWriting(self,line,filechg=False):
+		pass
+
 	def handleTitle(self):
 		""" If this page is in a page other than Main, it will contain a ":", in which case we should extract
 		 	the namespace """
-		titleInfo = self.buffer.split(":")
-		if len(titleInfo) == 2:
-			#there is another namespace besides main
-			self.pageattrs["namespace"] = titleInfo[0]
-			self.pageattrs["title"] = titleInfo[1]
+		
+		titleInfo = self.buffer.split(":",1)
+		if len(titleInfo) == 2 and titleInfo[0] in self.namespaces:
+			self.pageattrs["namespace"]=titleInfo[0]
+			self.pageattrs["title"]=titleInfo[1]
 		else:
-			self.pageattrs["namespace"] = "Main"
-			self.pageattrs["title"] = titleInfo[0]
+			self.pageattrs["namespace"]="Main"
+			self.pageattrs["title"]=self.buffer
 		self.status.setCurrentPageTitle(self.buffer)
 	
 	def handleEndOfPage(self):
@@ -171,9 +200,9 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		if "redirect" not in list(self.pageattrs.keys()):
 			self.pageattrs["redirect"]=0
 		
-		encodeSpecifiedDictValues(self.pageattrs,["title"],self.encoding)
+		encodeSpecifiedDictValues(self.pageattrs,["namespace","title"],self.encoding)
 		self.pageWriter.writerow(self.pageattrs)
-		self.sendToFileWriter("\t</page>")
+		self.fileWrite("\t</page>")
 		
 		# If we've gone a long time without writing out our metadata, do so.
 		if self.revisionsSinceLastWriteOut > self.writeOutInterval:
@@ -210,7 +239,7 @@ class PageHandler(xml.sax.handler.ContentHandler):
 		
 		# If we got any article text, generate XML and write it out.
 		if "text" in self.revattrs.keys():
-			self.sendToFileWriter(self.generateRevisionXML())
+			self.fileWrite(self.generateRevisionXML())
 		
 		self.status.incrementRevisionsParsed()
 		self.revisionsSinceLastWriteOut+=1
@@ -363,10 +392,10 @@ def decompressFile(path,chunksize):
 	parseQ.put(None)
 	f.close()
 
-def parse(statusUpdater,metaOutpath,textOutpath,procid):
+def parse(statusUpdater,metaOutpath,textOutpath,procid,textoutput):
 	# Sets up the XML parser
 	parser = xml.sax.make_parser()
-	handler = PageHandler(metaOutpath,textOutpath,statusUpdater,procid)
+	handler = PageHandler(metaOutpath,textOutpath,statusUpdater,procid,textoutput)
 	parser.setContentHandler(handler)
 	
 	# As long as we don't get a None (which indicates the end of the file),
@@ -388,31 +417,42 @@ def make100numbereddirs(basepath):
 		if not os.path.exists(pth):
 		    os.makedirs(pth)
 
-def makeCompressedTextDirs(outpath):
-	make100numbereddirs(outpath)
+def makeDirectories(textoutpath,metaoutpath):
+	make100numbereddirs(textoutpath)
 	for i in range(100):
-		make100numbereddirs("{0}/{1:02d}".format(outpath,i))
+		make100numbereddirs("{0}/{1:02d}".format(textoutpath,i))
 
-if __name__=="__main__":
-	assert len(sys.argv) == 4,"Usage: python {0} inputfile procid statusupdateinterval".format(sys.argv[0])
+	if not os.path.exists(metaoutpath):
+		os.makedirs(metaoutpath)
+
+def processArguments():
+	assert len(sys.argv) in [4,5],"Usage: python {0} inputfile procid statusupdateinterval [notext]".format(sys.argv[0])
 	inpath = sys.argv[1]
 	procid = sys.argv[2]
 	updateInterval = int(sys.argv[3])
+	
+	if len(sys.argv)==5 and sys.argv[4] == "notext":
+		textoutput=False
+	else:
+		textoutput=True
+	
 	assert os.path.exists(inpath),"Input file does not exist"
 	assert type(updateInterval) is int,"Status update interval must be an integer"
 	
-	textOutpath = "/wikigroup/textoutput"
-	metaOutpath = "/wikigroup/metaoutput"
-	
-	makeCompressedTextDirs(textOutpath)
-	
-	if not os.path.exists(metaOutpath):
-		os.makedirs(metaOutpath)
+	return inpath,procid,updateInterval,textoutput
 
+if __name__=="__main__":
+	inpath,procid,updateInterval,textoutput = processArguments()
+	
+	textoutpath = "/wikigroup/textoutput"
+	metaoutpath = "/wikigroup/metaoutput"
+	
+	makeDirectories(textoutpath,metaoutpath)
+	
 	s= StatusUpdater(updateInterval,inpath)
 	s.start()
 	p = Process(target=decompressFile,args=(inpath,10000000))
 	p.start()
-	parse(s,metaOutpath,textOutpath,procid)
+	parse(s,metaoutpath,textoutpath,procid,textoutput)
 	s.addMessage("Execution complete!  Final stats shown immediately above.")
 	s.terminate()
