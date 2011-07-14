@@ -12,6 +12,7 @@ class PageHandler(xml.sax.handler.ContentHandler):
         self.inID = False
         self.inRevision = False
         self.currentPageID = None
+        self.currentTitle = None
         self.outQ = outQ
         
     def startElement(self, name, attributes):
@@ -30,13 +31,15 @@ class PageHandler(xml.sax.handler.ContentHandler):
         if name == "id":
             self.inID= False
             if not self.inRevision:
-                self.currentPageID = "".join(self.buffer)
+                self.currentPageID = int("".join(self.buffer))
         elif name == "revision":
             self.inRevision = False
+        elif name == "title":
+            self.currentTitle = "".join(self.buffer).encode("utf-8")
         elif name == "text":
             self.inText = False
             text = "".join(self.buffer).encode("utf-8")
-            self.outQ.put((self.currentPageID,text))
+            self.outQ.put((self.currentPageID,self.currentTitle,text))
         elif name == "mediawiki":
             self.outQ.put((None,None))
         
@@ -47,23 +50,23 @@ def qManager(outQ):
     connection = psycopg2.connect(database = "wikigroup", user = "postgres", password = "wiki!@carl", host = "localhost", port = "5432")
     cursor = connection.cursor()
     while True:
-        pageID,text = outQ.get()
+        pageID,title,text = outQ.get()
         if pageID is not None:
-            addToDB(pageID,text,cursor)
-            print i
+            addToDB(pageID,title,text,cursor)
             i+=1
+            if i%1000 == 0:
+                print "{0} DB inputs complete.".format(i)
         else:
             connection.commit()
             connection.close()
             break
 
-def addToDB(pageID, pageText, cursor):
-    cursor.execute("INSERT INTO articleText2 VALUES (%s, %s);", (pageID, pageText))
-    print pageID
+def addToDB(pageID, title, pageText, cursor):
+    cursor.execute("INSERT INTO atext VALUES (%s, %s, %s, setweight(to_tsvector(coalesce(%s,'')),'A')||setweight(to_tsvector(coalesce(%s,'')),'D'));", (pageID, title, pageText, title, pageText))
 
 def readIn(inQ):
     chunksize=10000000
-    infile = BZ2File(sys.argv[1])
+    infile = open(sys.argv[1])
     next = infile.read(chunksize)
     while next != "":
         inQ.put(next)
@@ -76,7 +79,7 @@ if __name__=="__main__":
     
     parser = xml.sax.make_parser()
     inQ = multiprocessing.Queue(10)
-    outQ = multiprocessing.Queue(50)
+    outQ = multiprocessing.Queue(500)
     handler = PageHandler(outQ)
     parser.setContentHandler(handler)
 
