@@ -67,7 +67,11 @@ def qManager(outQ):
 			break
 
 def addToDB(pageID, title, pageText, cursor):
-	cursor.execute("INSERT INTO atext4 VALUES (%s, %s, %s, setweight(to_tsvector(coalesce(%s,'')),'A')||setweight(to_tsvector(coalesce(%s,'')),'D'));", (pageID, title, pageText, title, pageText))
+	try:
+		cursor.execute("INSERT INTO atext4 VALUES (%s, %s, %s, setweight(to_tsvector(coalesce(%s,'')),'A')||setweight(to_tsvector(coalesce(%s,'')),'D'));", (pageID, title, pageText, title, pageText))
+	except OperationalError, e:
+		cursor.execute("INSERT INTO atext4 VALUES (%s, %s, %s, NULL);", (pageID, title, pageText))
+		print e+"\nDB Write failed on PageID: {0}.  Continuing.".format(pageID)
 
 def readIn(inQ):
 	chunksize=10000000
@@ -92,9 +96,7 @@ if __name__=="__main__":
 	p.start()
 	q = multiprocessing.Process(target=readIn,args=(inQ,))
 	q.start()
-	
-	
-	
+
 	chunk = inQ.get()
 	while True:
 		if chunk is not None:
