@@ -36,7 +36,7 @@ def getWikipagesForTextQuery(query):
 
 	start = time.time()
 	cursor.execute("""
-	  select P.title, A.pageid, ts_rank_cd(vect, q) as rank
+	  select P.title, A.pageid, ts_rank_cd(vect, q, 2) as rank
 	  from atext4 A, to_tsquery('english', %s) q, pages P
 	  where vect @@ q and A.pageid=P.pageid
 	  order by rank desc
