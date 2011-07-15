@@ -52,24 +52,27 @@ class PageHandler(xml.sax.handler.ContentHandler):
 def qManager(outQ):
 	i=1
 	connection = psycopg2.connect(database = "wikigroup", user = "postgres", password = "wiki!@carl", host = "floyd", port = "5432")
+	connection.autocommit = True
 	cursor = connection.cursor()
 	while True:
 		pageID,title,text = outQ.get()
 		if pageID is not None:
-			addToDB(pageID,title,text,cursor)
+			addToDB(pageID,title,text,connection,cursor)
 			i+=1
 			if i%1000 == 0:
 				print "{0} DB inputs complete.".format(i)
 				connection.commit()
 		else:
+			print "{0} pages written to DB.".format(i)
 			connection.commit()
 			connection.close()
 			break
 
-def addToDB(pageID, title, pageText, cursor):
+def addToDB(pageID, title, pageText, connection, cursor):
 	try:
 		cursor.execute("INSERT INTO atext4 VALUES (%s, %s, %s, setweight(to_tsvector(coalesce(%s,'')),'A')||setweight(to_tsvector(coalesce(%s,'')),'D'));", (pageID, title, pageText, title, pageText))
 	except psycopg2.OperationalError, e:
+		connection.rollback()
 		cursor.execute("INSERT INTO atext4 VALUES (%s, %s, %s, NULL);", (pageID, title, pageText))
 		print e+"\nDB Write failed on PageID: {0}.  Continuing.".format(pageID)
 
