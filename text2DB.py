@@ -74,7 +74,8 @@ def addToDB(pageID, title, pageText, connection, cursor):
 	except psycopg2.OperationalError, e:
 		connection.rollback()
 		cursor.execute("INSERT INTO atext4 VALUES (%s, %s, %s, NULL);", (pageID, title, pageText))
-		print e+"\nDB Write failed on PageID: {0}.  Continuing.".format(pageID)
+		print e
+		print "DB Write failed on PageID: {0}.  Continuing.".format(pageID)
 
 def readIn(inQ):
 	chunksize=10000000
