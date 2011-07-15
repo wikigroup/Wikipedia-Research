@@ -69,7 +69,7 @@ def qManager(outQ):
 def addToDB(pageID, title, pageText, cursor):
 	try:
 		cursor.execute("INSERT INTO atext4 VALUES (%s, %s, %s, setweight(to_tsvector(coalesce(%s,'')),'A')||setweight(to_tsvector(coalesce(%s,'')),'D'));", (pageID, title, pageText, title, pageText))
-	except OperationalError, e:
+	except psycopg2.OperationalError, e:
 		cursor.execute("INSERT INTO atext4 VALUES (%s, %s, %s, NULL);", (pageID, title, pageText))
 		print e+"\nDB Write failed on PageID: {0}.  Continuing.".format(pageID)
 
