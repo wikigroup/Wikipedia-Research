@@ -52,8 +52,8 @@ class PageHandler(xml.sax.handler.ContentHandler):
 def qManager(outQ):
 	i=1
 	connection = psycopg2.connect(database = "wikigroup", user = "postgres", password = "wiki!@carl", host = "floyd", port = "5432")
-	connection.autocommit = True
 	cursor = connection.cursor()
+	cursor.execute("SAVEPOINT lastsuccess;")
 	while True:
 		pageID,title,text = outQ.get()
 		if pageID is not None:
@@ -70,12 +70,14 @@ def qManager(outQ):
 
 def addToDB(pageID, title, pageText, connection, cursor):
 	try:
-		cursor.execute("INSERT INTO atext4 VALUES (%s, %s, %s, setweight(to_tsvector(coalesce(%s,'')),'A')||setweight(to_tsvector(coalesce(%s,'')),'D'));", (pageID, title, pageText, title, pageText))
+		cursor.execute("INSERT INTO atext VALUES (%s, %s, %s, setweight(to_tsvector(coalesce(%s,'')),'A')||setweight(to_tsvector(coalesce(%s,'')),'D'));", (pageID, title, pageText, title, pageText))
 	except psycopg2.OperationalError, e:
-		connection.rollback()
-		cursor.execute("INSERT INTO atext4 VALUES (%s, %s, %s, NULL);", (pageID, title, pageText))
+		connection.execute("ROLLBACK TO lastsuccess")
+		cursor.execute("INSERT INTO atext VALUES (%s, %s, %s, NULL);", (pageID, title, pageText))
 		print e
 		print "DB Write failed on PageID: {0}.  Continuing.".format(pageID)
+	finally:
+		cursor.excecute("SAVEPOINT lastsuccess;")
 
 def readIn(inQ):
 	chunksize=10000000
@@ -84,9 +86,8 @@ def readIn(inQ):
 	while next != "":
 		inQ.put(next)
 		next = infile.read(chunksize)
+	print "File Reading/Decompression Complete"
 	inQ.put(None)
-
-#page = namedtuple("Page",['pageid','text'])
 
 if __name__=="__main__":
 	
