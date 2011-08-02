@@ -2,7 +2,8 @@
 # $Id: test.py 2081 2009-11-18 18:13:43Z shodan $
 #
 
-from sphinxapi import *
+import sphinxapi
+from sp_vars import *
 import sys, time
 
 class SphinxAPIException(Exception):
@@ -32,12 +33,16 @@ class SphinxResult(object):
 	def matches(self):
 		return self._matches
 		
-	def getAttributeForAllMatches(self,attr):
+	def getMatchesByAttr(self,attr):
+		''' i.e. getFieldMatches("title") returns a list cotnaining the title field for all matches.'''
 		try:
 			return [m["attrs"][attr] for m in self._matches]
 		except KeyError:
 			raise SphinxAPIException, "{0} not a valid field in this query.".format(attr)
-			
+	
+	def getMatchIDs(self):
+		return [m['id'] for m in self.matches()]
+	
 	def queryFields(self):
 		return self._fields
 		
@@ -53,49 +58,35 @@ class SphinxResult(object):
 	def __len__(self):
 		return self._total_found
 
-def initializeClient(host,port=9312,fieldweights={"title":4,"body":1},mode=SPH_MATCH_EXTENDED):
-	cl = SphinxClient()
-	cl.SetServer(host, port)
-	cl.SetFieldWeights(fieldweights)
-	cl.SetMatchMode(mode)
-	return cl
+class SphinxClient(sphinxapi.SphinxClient):
+	def __init__(self,host,\
+			port=9312,\
+			fieldweights={"title":5,"body":1},\
+			matchmode=SPH_MATCH_EXTENDED2,\
+			rankingmode=SPH_RANK_PROXIMITY_BM25,\
+			sortmode=SPH_SORT_RELEVANCE):
+		super(SphinxClient,self).__init__()
+		self.SetServer(host,port)
+		self.SetFieldWeights(fieldweights)
+		self.SetMatchMode(matchmode)
+		self.SetRankingMode(rankingmode)
+		self.SetSortMode(sortmode)
 	
-def query(client,q): #filtervals=False,filercol=None,filtervals=None,groupby=False,groupsort=None,sortby=False,limit=None):
-	# do query
-	res = client.Query ( q, "articletext_sample" )
+	def query(self,q,index="*"): #filtervals=False,filercol=None,filtervals=None,groupby=False,groupsort=None,sortby=False,limit=None):
+		# do query
+		res = super(SphinxClient,self).Query ( q, index )
 
-	if not res:
-		raise SphinxAPIException, 'query failed: %s' % client.GetLastError()
+		if not res:
+			raise SphinxAPIException, 'query failed: %s' % client.GetLastError()
 
-	if client.GetLastWarning():
-		print 'WARNING: %s\n' % client.GetLastWarning()
+		if self.GetLastWarning():
+			print 'WARNING: %s\n' % self.GetLastWarning()
 		
-	return SphinxResult(res)
+		return SphinxResult(res)
 
 if __name__ =="__main__":
-	cl = initializeClient('dmusican41812')
-	res = query(cl,"Carleton College")	
+	cl = SphinxClient('dmusican41812')
+	res = cl.query("Carleton College")	
 	print res.warning()
 	print zip([m["id"] for m in res.matches()],res.getAttributeForAllMatches("title"))
 	print res.queryWords()
-
-# print 'Query \'%s\' retrieved %d of %d matches in %s sec' % (q, res['total'], res['total_found'], res['time'])
-# print 'Query stats:'
-# 
-# if res.has_key('words'):
-# 	for info in res['words']:
-# 		print '\t\'%s\' found %d times in %d documents' % (info['word'], info['hits'], info['docs'])
-# 
-# if res.has_key('matches'):
-# 	n = 1
-# 	print '\nMatches:'
-# 	for match in res['matches']:
-# 		attrsdump = match['attrs']
-# 		print attrsdump["title"]
-# 			
-# 	#	print '%d. doc_id=%s, weight=%d%s' % (n, match['id'], match['weight'], attrsdump)
-# 		n += 1
-
-#
-# $Id: test.py 2081 2009-11-18 18:13:43Z shodan $
-#
