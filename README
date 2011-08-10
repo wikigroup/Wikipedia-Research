@@ -3,8 +3,28 @@ Summer 2011
 Advisor: Dave Musicant
 Participants: Michael Groeneman, David Long, and Laurel Orr
 
-Goal
+GOAL
 
 Our overall goal is to look at the information posted on wikipedia to find out more about the users and what motivates them. We want to take the most current wikipedia dump of all pages and their past revisions and insert the data into postgres SQL. We are using python version 2.6.1 and postgres 9.0.4. We first want to discover what sources of data used as citations are considered reputable to the wikipedia community. Using this information, we want to plan and write a system that looks at news from reputable sources and recommends information to post onto wikipedia pages to different users. We hope this system will help wikipedia users get more engaged in posting and help keep the content up to date.
 
-Let's finish this and decide that this is what I want here
+WHAT WE DID
+
+The first 4 weeks of our summer was spent importing the wikipedia dump from april 5th 2011 into postgreSQL. Wikipedia offers the dump pre-split into 15 chunks that are compressed in bzip2 format. Each of these chunks went to a separate computer in our lab. We then ran parser.py on each of the 15 computers via the unix screen function. Screen allowed us to nice the program and ensure that if other people used the computers, our program would still run (assuming the computer was never turned off).
+
+Parser.py outputted text files of the metadata and separate compressed files of each page's text data. The metadata was put into postgreSQL using ????. We created a revisions, editors, and pages table. (What did you guys do next with the table: indexes, sorting, joins...?)
+
+Two separate projects developed after the data was imported: developing the text comparison system to compare the news article text and wikipedia page text and learning map reduce to research into sticky citations.
+
+1. News Recommender (Wikigy)
+
+2. Citation Research
+
+We were given access to St. Olaf's cluster that runs Apache Hadoop version 0.20.0. To read about running and using Hadoop on their cluster, see HadoopInstructions.txt. We first attempted to use hadoop streaming so we could write code in python. This caused lots of problems. First, the StreamXmlRecordReader for splitting inputs at <page> tags for the wikipedia dump had a bug in St. Olaf's version of Hadoop. We managed to fix that problem (see StreamXmlReaderFix.txt for more info) but then ran into the fact that the dump was compressed. Because of the sheer size of the wikipedia dump, there was no way we could have put all of wikipedia on HDFS uncompressed. Although we didn't look into it, our compressed files of the text of each page would probably be too big as well (they also didn't have the meta data). At the time, streaming did not deal with decompression and xml splitting well. We fought with this for about a week and a half before finally giving in a using java instead of streaming. We were able to find an xml input format that also dealt with decompression.
+
+NOTE: This wiki streaming input format came out at the end of our summer and is worth looking into. It is only tested on Hadoop 0.21.0 but may also work on version 0.20.0. (https://github.com/whym/wikihadoop)
+
+We used this to get total word counts of ??? and to get url citations added to wikipedia since the april 5th 2011 dump (used in the testing of Wikigy). Then came in Macalaster.
+
+Macalaster ran a citation counter for us that, for each citation added to wikipedia, counted the number of times it was added, removed, and the total number of revisions it was present in. This helped us determine our first results on sticky citations (see stickyCitationResearch.txt for more research info). Macalaster also gave us their version of the april 4th 2011 dump. They wrote a python script that ran through the 7zip compressed version of the dump and output 100 files in the form pageid \t lzma compressed xml of the page where the last two digits of the pageid match the id number of the file. These files proved great to use for hadoop because bz2 files can't be split while these can. To run their script again, you will need 7z and lzma to be installed on unix and it will need to be run on a windows. All of Macalaster's source code is available at http://code.google.com/p/wikipedia-map-reduce/source/browse/.
+
+Using their parsers and dump, we ran jobs that found all editors who added sticky citations and then found all other citations that those sticky editors added.
